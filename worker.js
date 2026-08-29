@@ -7,6 +7,7 @@ app.use('*', cors());
 
 const BASE_URL = 'https://tv12.lk21official.cc';
 const CACHE_TTL = 3600; // Cache selama 1 jam (3600 detik)
+const MAX_PAGE = 15;    // Diatur sampai 15 Halaman
 
 // ==================== LIST GENRE & COUNTRY ====================
 const LIST_GENRE = [
@@ -26,8 +27,8 @@ const VALID_COUNTRIES = ["usa", "japan", "south-korea", "china", "thailand", "uk
 // ==================== HELPER SCRAPER ====================
 async function scrapePage(c, cacheKey, pathPrefix, page) {
     const pageNum = parseInt(page || '1', 10);
-    if (isNaN(pageNum) || pageNum < 1 || pageNum > 12) {
-        return c.json({ error: true, error_msg: "Halaman hanya diperbolehkan dari 1 sampai 12" }, 400);
+    if (isNaN(pageNum) || pageNum < 1 || pageNum > MAX_PAGE) {
+        return c.json({ error: true, error_msg: `Halaman hanya diperbolehkan dari 1 sampai ${MAX_PAGE}` }, 400);
     }
 
     const forceRefresh = c.req.query('refresh') === 'true';
@@ -102,9 +103,9 @@ async function scrapePage(c, cacheKey, pathPrefix, page) {
             }
         });
 
-        const responseData = { page: pageNum, total_data: results.length, data: results };
+        const responseData = { page: pageNum, max_page: MAX_PAGE, total_data: results.length, data: results };
 
-        
+        // 3. Simpan ke KV Cache jika sukses
         if (results.length > 0) {
             try {
                 await c.env.LK21_KV.put(`${cacheKey}_p${pageNum}`, JSON.stringify(responseData), {
@@ -154,6 +155,77 @@ app.get('/country/:code', (c) => {
         return c.json({ error: true, error_msg: "Country tidak valid", available_countries: VALID_COUNTRIES }, 400);
     }
     return scrapePage(c, `country_${countryCode}`, `country/${countryCode}`, c.req.query('page'));
+});
+
+// 7. Detail Film & Video Player Embed
+app.get('/detail/:slug', async (c) => {
+    const slug = c.req.param('slug');
+    const cacheKey = `detail_${slug}`;
+    const forceRefresh = c.req.query('refresh') === 'true';
+
+    // Cek KV Cache
+    if (!forceRefresh) {
+        try {
+            const cachedData = await c.env.LK21_KV.get(cacheKey, { type: 'json' });
+            if (cachedData) {
+                return c.json({ status: true, source: "KV Cache (Fast)", ...cachedData });
+            }
+        } catch (e) {
+            console.error("KV Error:", e.message);
+        }
+    }
+
+    const targetUrl = `${BASE_URL}/${slug}/`;
+
+    try {
+        const res = await fetch(targetUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Referer': `${BASE_URL}/`
+            }
+        });
+
+        if (!res.ok) {
+            return c.json({ error: true, status_code: res.status, error_msg: "Gagal mengambil detail film" }, 400);
+        }
+
+        const html = await res.text();
+        const $ = cheerio.load(html);
+
+        // Ekstrak URL iframe embed player
+        let embedUrl = $('#playeriframe').attr('src') || $('iframe[src*="player"]').attr('src') || $('iframe').first().attr('src');
+        
+        if (embedUrl && embedUrl.startsWith('//')) {
+            embedUrl = `https:${embedUrl}`;
+        }
+
+        const sinopsis = $('.synopsis, #movie-detail p').text().trim() || "Sinopsis tidak tersedia.";
+        const genres = [];
+        $('a[href*="/genre/"]').each((_, el) => genres.push($(el).text().trim()));
+
+        const responseData = {
+            slug,
+            embed_url: embedUrl || null,
+            sinopsis,
+            genres: [...new Set(genres)]
+        };
+
+        if (embedUrl) {
+            try {
+                await c.env.LK21_KV.put(cacheKey, JSON.stringify(responseData), { expirationTtl: CACHE_TTL });
+            } catch (e) {
+                console.error("KV Set Error:", e.message);
+            }
+        }
+
+        return c.json({ status: true, source: "Live Scrape", ...responseData });
+
+    } catch (err) {
+        return c.json({ error: true, error_msg: err.message }, 500);
+    }
 });
 
 export default app;
