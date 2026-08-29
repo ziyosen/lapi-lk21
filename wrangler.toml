@@ -1,0 +1,7 @@
+name = "lk21-scraper"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "LK21_KV"
+id = "7ba0e26f218943af8bc7b254909ddde8"
