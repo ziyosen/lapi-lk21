@@ -9,13 +9,11 @@ const BASE_URL = 'https://tv12.lk21official.cc';
 const CACHE_TTL = 3600; 
 const MAX_PAGE = 15;    
 
-const LIST_GENRE = [
-    "drama", "comedy", "action", "thriller", "romance", "horror", "crime", "adventure",
-    "mystery", "animation", "fantasy", "sci-fi", "family", "history",
-    "war", "music", "documentary", "sport", "western", "musical", "kids", "movies"
-];
-const VALID_COUNTRIES = ["usa", "japan", "south-korea", "china", "thailand", "uk"];
+app.get('/', (c) => scrapePage(c, 'latest', 'latest', c.req.query('page')));
+app.get('/populer', (c) => scrapePage(c, 'populer', 'populer', c.req.query('page')));
+app.get('/genre/:name', (c) => scrapePage(c, `genre_${c.req.param('name')}`, `genre/${c.req.param('name')}`, c.req.query('page')));
 
+// Fungsi Scrape Halaman Utama / Katalog (Tetap sama)
 async function scrapePage(c, cacheKey, pathPrefix, page) {
     const pageNum = parseInt(page || '1', 10);
     if (isNaN(pageNum) || pageNum < 1 || pageNum > MAX_PAGE) {
@@ -34,12 +32,9 @@ async function scrapePage(c, cacheKey, pathPrefix, page) {
 
     try {
         const res = await fetch(targetUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': `${BASE_URL}/`
-            }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
-        if (!res.ok) return c.json({ error: true, status_code: res.status, error_msg: "Gagal scrape LK21" }, 400);
+        if (!res.ok) return c.json({ error: true, error_msg: "Gagal scrape LK21" }, 400);
 
         const html = await res.text();
         const $ = cheerio.load(html);
@@ -54,14 +49,10 @@ async function scrapePage(c, cacheKey, pathPrefix, page) {
             const judul = $img.attr('alt') || $link.attr('title') || $(el).find('h2, h3').text().trim();
             let thumbnail = $img.attr('src') || $img.attr('data-src');
             if (thumbnail && thumbnail.startsWith('//')) thumbnail = `https:${thumbnail}`;
-            
             const slug = href.replace(/https?:\/\/[^\/]+/, '').replace(/^\/|\/$/g, '');
-            const rawText = $(el).text();
-            const rating = rawText.match(/(\d+\.\d+)/)?.[1] || null;
-            const kualitas = rawText.includes('HD') ? 'HD' : null;
-
+            
             if (judul && slug && !results.some(r => r.slug === slug)) {
-                results.push({ judul: judul.replace(/Permalink to /i, ''), slug, url: `${BASE_URL}/${slug}/`, thumbnail, rating, kualitas });
+                results.push({ judul: judul.replace(/Permalink to /i, ''), slug, thumbnail });
             }
         });
 
@@ -73,12 +64,7 @@ async function scrapePage(c, cacheKey, pathPrefix, page) {
     }
 }
 
-app.get('/', (c) => scrapePage(c, 'latest', 'latest', c.req.query('page')));
-app.get('/latest-series', (c) => scrapePage(c, 'latest_series', 'latest-series', c.req.query('page')));
-app.get('/populer', (c) => scrapePage(c, 'populer', 'populer', c.req.query('page')));
-app.get('/genre/:name', (c) => scrapePage(c, `genre_${c.req.param('name')}`, `genre/${c.req.param('name')}`, c.req.query('page')));
-
-// 7. DETAIL ENDPOINT DENGAN TRIK PROXY PLAYERIFRAME.LOL
+// 7. ENDPOINT DETAIL (Di-upgrade dengan script temuanmu!)
 app.get('/detail/:slug', async (c) => {
     const slug = c.req.param('slug');
     const cacheKey = `detail_${slug}`;
@@ -93,48 +79,70 @@ app.get('/detail/:slug', async (c) => {
 
     try {
         const res = await fetch(`${BASE_URL}/${slug}/`, {
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': `${BASE_URL}/` }
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
         if (!res.ok) return c.json({ error: true, error_msg: "Gagal mengambil detail" }, 400);
 
         const html = await res.text();
         const $ = cheerio.load(html);
-        const extractedServers = [];
 
-        // LOGIKA BARU: Ambil URL dari tag <a> yang disembunyikan LK21 lalu bungkus proxy
-        $('#loadProviders li a, ul.providers li a, .server-option').each((_, el) => {
-            let rawUrl = $(el).attr('href') || $(el).attr('data-url');
-            if (rawUrl && rawUrl.includes('url=')) {
-                let actualPlayerUrl = rawUrl.split('url=')[1];
-                let decodedUrl = decodeURIComponent(actualPlayerUrl);
+        // --- EKSTRAK METADATA LENGKAP ---
+        const title = $("#movie-detail blockquote > a").text().trim() || "N/A";
+        const image = $("#movie-detail > div > div.col-xs-3.content-poster > figure > picture > img").attr("src") || null;
+        const quality = $("#movie-detail .content h3").eq(1).text().trim() || "N/A";
+        const status = $("#movie-detail .content h3").eq(0).text().trim() || "N/A";
+        const diterbitkan = $("#movie-detail .content").find("div:contains('Diterbitkan')").text().replace("Diterbitkan", "").trim() || "N/A";
+        const sinopsis = $('.synopsis, #movie-detail p').text().trim() || "Sinopsis tidak tersedia.";
+
+        // Ekstrak Bintang Film
+        let bintang_film = [];
+        $("#movie-detail > div > div.col-xs-9.content > div:nth-child(3) h3 a, .content h3 a").each((_, el) => {
+            const nama = $(el).text().trim();
+            if (nama && !bintang_film.includes(nama)) bintang_film.push(nama);
+        });
+
+        // Ekstrak Genre
+        const genres = [];
+        $('a[href*="/genre/"]').each((_, el) => genres.push($(el).text().trim()));
+
+        // --- EKSTRAK SERVER PLAYER & BUNGKUS PROXY ---
+        const extractedServers = [];
+        $("#loadProviders > li > a, ul.providers li a").each((i, el) => {
+            const serverName = $(el).text().trim() || `Server ${i + 1}`;
+            const href = $(el).attr("href");
+
+            if (href && href.includes('url=')) {
+                // Ambil link mentahnya
+                const actualPlayerUrl = href.split('url=')[1];
+                const decodedUrl = decodeURIComponent(actualPlayerUrl);
                 
-                // Gunakan trik playeriframe.lol
-                let proxyUrl = `https://playeriframe.lol/iframe.php?url=${encodeURIComponent(decodedUrl)}`;
+                // Bungkus pakai proxy playeriframe.lol
+                const proxyUrl = `https://playeriframe.lol/iframe.php?url=${encodeURIComponent(decodedUrl)}`;
                 
                 if (!extractedServers.some(s => s.url === proxyUrl)) {
-                    extractedServers.push({ name: "Server VIP (Bypass)", url: proxyUrl });
+                    extractedServers.push({ name: serverName, url: proxyUrl });
                 }
             }
         });
 
-        // Fallback: Ambil Iframe biasa
-        $('#playeriframe, iframe').each((_, el) => {
-            let src = $(el).attr('src');
-            if (src && !extractedServers.some(s => s.url === src)) {
-                extractedServers.push({ name: "Server LK21 Asli", url: src.startsWith('//') ? `https:${src}` : src });
-            }
-        });
-
-        const sinopsis = $('.synopsis, #movie-detail p').text().trim() || "Sinopsis tidak tersedia.";
-        
         const responseData = {
             slug,
+            title,
+            image,
+            status,
+            quality,
+            diterbitkan,
+            bintang_film: bintang_film.length > 0 ? bintang_film.join(", ") : "N/A",
+            genres: [...new Set(genres)],
+            sinopsis,
             default_embed: extractedServers.length > 0 ? extractedServers[0].url : null,
-            servers: extractedServers,
-            sinopsis
+            servers: extractedServers
         };
 
-        if (extractedServers.length > 0) await c.env.LK21_KV.put(cacheKey, JSON.stringify(responseData), { expirationTtl: CACHE_TTL });
+        if (extractedServers.length > 0) {
+            await c.env.LK21_KV.put(cacheKey, JSON.stringify(responseData), { expirationTtl: CACHE_TTL });
+        }
+        
         return c.json({ status: true, source: "Live Scrape", ...responseData });
 
     } catch (err) {
