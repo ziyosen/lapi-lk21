@@ -157,7 +157,7 @@ app.get('/country/:code', (c) => {
     return scrapePage(c, `country_${countryCode}`, `country/${countryCode}`, c.req.query('page'));
 });
 
-// 7. Detail Film & Video Player Embed
+// 7. Detail Film & Multi-Server Unblocked Player Embed
 app.get('/detail/:slug', async (c) => {
     const slug = c.req.param('slug');
     const cacheKey = `detail_${slug}`;
@@ -195,11 +195,30 @@ app.get('/detail/:slug', async (c) => {
         const html = await res.text();
         const $ = cheerio.load(html);
 
-        // Ekstrak URL iframe embed player
-        let embedUrl = $('#playeriframe').attr('src') || $('iframe[src*="player"]').attr('src') || $('iframe').first().attr('src');
-        
-        if (embedUrl && embedUrl.startsWith('//')) {
-            embedUrl = `https:${embedUrl}`;
+        // Ekstrak ID IMDb atau TMDb jika tersedia
+        const imdbId = $('a[href*="imdb.com/title"]').attr('href')?.match(/tt\d+/)?.[0] || null;
+        const tmdbId = $('meta[property="page:id"]').attr('content') || null;
+
+        // Ambil Embed URL Bawaan LK21
+        let originalEmbed = $('#playeriframe').attr('src') || $('iframe[src*="player"]').attr('src') || $('iframe').first().attr('src');
+        if (originalEmbed && originalEmbed.startsWith('//')) {
+            originalEmbed = `https:${originalEmbed}`;
+        }
+
+        // Susun Daftar Multi-Server Unblocked
+        const embedServers = [];
+        const mediaId = imdbId || tmdbId;
+
+        if (mediaId) {
+            embedServers.push(
+                { name: "Server Fast (2Embed)", url: `https://www.2embed.cc/embed/${mediaId}` },
+                { name: "Server HD (Vidsrc)", url: `https://vidsrc.to/embed/movie/${mediaId}` },
+                { name: "Server VIP (Embed.su)", url: `https://embed.su/embed/movie/${mediaId}` }
+            );
+        }
+
+        if (originalEmbed) {
+            embedServers.push({ name: "Server LK21 Original", url: originalEmbed });
         }
 
         const sinopsis = $('.synopsis, #movie-detail p').text().trim() || "Sinopsis tidak tersedia.";
@@ -208,12 +227,15 @@ app.get('/detail/:slug', async (c) => {
 
         const responseData = {
             slug,
-            embed_url: embedUrl || null,
+            imdb_id: imdbId,
+            tmdb_id: tmdbId,
+            default_embed: embedServers.length > 0 ? embedServers[0].url : originalEmbed,
+            servers: embedServers,
             sinopsis,
             genres: [...new Set(genres)]
         };
 
-        if (embedUrl) {
+        if (embedServers.length > 0 || originalEmbed) {
             try {
                 await c.env.LK21_KV.put(cacheKey, JSON.stringify(responseData), { expirationTtl: CACHE_TTL });
             } catch (e) {
