@@ -157,13 +157,13 @@ app.get('/country/:code', (c) => {
     return scrapePage(c, `country_${countryCode}`, `country/${countryCode}`, c.req.query('page'));
 });
 
-// 7. Detail Film & Multi-Server Unblocked Player Embed
+// 7. Detail Film & Advanced Multi-Server Extractor
 app.get('/detail/:slug', async (c) => {
     const slug = c.req.param('slug');
     const cacheKey = `detail_${slug}`;
     const forceRefresh = c.req.query('refresh') === 'true';
 
-    // Cek KV Cache
+    // 1. Cek KV Cache
     if (!forceRefresh) {
         try {
             const cachedData = await c.env.LK21_KV.get(cacheKey, { type: 'json' });
@@ -195,31 +195,49 @@ app.get('/detail/:slug', async (c) => {
         const html = await res.text();
         const $ = cheerio.load(html);
 
-        // Ekstrak ID IMDb atau TMDb jika tersedia
+        const extractedServers = [];
+
+        // Ekstrak ID IMDb atau TMDb
         const imdbId = $('a[href*="imdb.com/title"]').attr('href')?.match(/tt\d+/)?.[0] || null;
         const tmdbId = $('meta[property="page:id"]').attr('content') || null;
-
-        // Ambil Embed URL Bawaan LK21
-        let originalEmbed = $('#playeriframe').attr('src') || $('iframe[src*="player"]').attr('src') || $('iframe').first().attr('src');
-        if (originalEmbed && originalEmbed.startsWith('//')) {
-            originalEmbed = `https:${originalEmbed}`;
-        }
-
-        // Susun Daftar Multi-Server Unblocked
-        const embedServers = [];
         const mediaId = imdbId || tmdbId;
 
+        // Opsi 1: Provider Embed Unblocked berbasis IMDb/TMDb
         if (mediaId) {
-            embedServers.push(
+            extractedServers.push(
                 { name: "Server Fast (2Embed)", url: `https://www.2embed.cc/embed/${mediaId}` },
                 { name: "Server HD (Vidsrc)", url: `https://vidsrc.to/embed/movie/${mediaId}` },
                 { name: "Server VIP (Embed.su)", url: `https://embed.su/embed/movie/${mediaId}` }
             );
         }
 
-        if (originalEmbed) {
-            embedServers.push({ name: "Server LK21 Original", url: originalEmbed });
-        }
+        // Opsi 2: Ekstrak dari iframe utama LK21
+        $('#playeriframe, iframe').each((_, el) => {
+            let src = $(el).attr('src') || $(el).attr('data-src');
+            if (src) {
+                if (src.startsWith('//')) src = `https:${src}`;
+                if (!extractedServers.some(s => s.url === src)) {
+                    extractedServers.push({ name: "Server LK21 Original", url: src });
+                }
+            }
+        });
+
+        // Opsi 3: Ekstrak dari elemen tombol/tab server LK21
+        $('.load-player, .server-option, ul.providers li a').each((_, el) => {
+            let url = $(el).attr('data-url') || $(el).attr('href');
+            let serverName = $(el).text().trim() || "LK21 Server Alt";
+
+            if (url) {
+                if (url.startsWith('//')) url = `https:${url}`;
+                if (!url.startsWith('http') && !url.startsWith('javascript')) {
+                    url = `${BASE_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+                }
+
+                if (url.startsWith('http') && !extractedServers.some(s => s.url === url)) {
+                    extractedServers.push({ name: serverName, url });
+                }
+            }
+        });
 
         const sinopsis = $('.synopsis, #movie-detail p').text().trim() || "Sinopsis tidak tersedia.";
         const genres = [];
@@ -229,13 +247,14 @@ app.get('/detail/:slug', async (c) => {
             slug,
             imdb_id: imdbId,
             tmdb_id: tmdbId,
-            default_embed: embedServers.length > 0 ? embedServers[0].url : originalEmbed,
-            servers: embedServers,
+            default_embed: extractedServers.length > 0 ? extractedServers[0].url : null,
+            servers: extractedServers,
             sinopsis,
             genres: [...new Set(genres)]
         };
 
-        if (embedServers.length > 0 || originalEmbed) {
+        // Simpan ke KV jika server ditemukan
+        if (extractedServers.length > 0) {
             try {
                 await c.env.LK21_KV.put(cacheKey, JSON.stringify(responseData), { expirationTtl: CACHE_TTL });
             } catch (e) {
