@@ -13,7 +13,6 @@ app.get('/', (c) => scrapePage(c, 'latest', 'latest', c.req.query('page')));
 app.get('/populer', (c) => scrapePage(c, 'populer', 'populer', c.req.query('page')));
 app.get('/genre/:name', (c) => scrapePage(c, `genre_${c.req.param('name')}`, `genre/${c.req.param('name')}`, c.req.query('page')));
 
-// Fungsi Scrape Halaman Utama / Katalog (Tetap sama)
 async function scrapePage(c, cacheKey, pathPrefix, page) {
     const pageNum = parseInt(page || '1', 10);
     if (isNaN(pageNum) || pageNum < 1 || pageNum > MAX_PAGE) {
@@ -64,7 +63,7 @@ async function scrapePage(c, cacheKey, pathPrefix, page) {
     }
 }
 
-// 7. ENDPOINT DETAIL (Di-upgrade dengan script temuanmu!)
+// 7. ENDPOINT DETAIL (SUPER EXTRACTOR)
 app.get('/detail/:slug', async (c) => {
     const slug = c.req.param('slug');
     const cacheKey = `detail_${slug}`;
@@ -86,49 +85,72 @@ app.get('/detail/:slug', async (c) => {
         const html = await res.text();
         const $ = cheerio.load(html);
 
-        // --- EKSTRAK METADATA LENGKAP ---
+        // --- EKSTRAK METADATA ---
         const title = $("#movie-detail blockquote > a").text().trim() || "N/A";
-        const image = $("#movie-detail > div > div.col-xs-3.content-poster > figure > picture > img").attr("src") || null;
-        const quality = $("#movie-detail .content h3").eq(1).text().trim() || "N/A";
         const status = $("#movie-detail .content h3").eq(0).text().trim() || "N/A";
+        const quality = $("#movie-detail .content h3").eq(1).text().trim() || "N/A";
         const diterbitkan = $("#movie-detail .content").find("div:contains('Diterbitkan')").text().replace("Diterbitkan", "").trim() || "N/A";
         const sinopsis = $('.synopsis, #movie-detail p').text().trim() || "Sinopsis tidak tersedia.";
 
-        // Ekstrak Bintang Film
         let bintang_film = [];
         $("#movie-detail > div > div.col-xs-9.content > div:nth-child(3) h3 a, .content h3 a").each((_, el) => {
             const nama = $(el).text().trim();
             if (nama && !bintang_film.includes(nama)) bintang_film.push(nama);
         });
 
-        // Ekstrak Genre
         const genres = [];
         $('a[href*="/genre/"]').each((_, el) => genres.push($(el).text().trim()));
 
-        // --- EKSTRAK SERVER PLAYER & BUNGKUS PROXY ---
+        // --- EKSTRAK SERVER LENGKAP & BUNGKUS PROXY ---
         const extractedServers = [];
-        $("#loadProviders > li > a, ul.providers li a").each((i, el) => {
-            const serverName = $(el).text().trim() || `Server ${i + 1}`;
-            const href = $(el).attr("href");
 
-            if (href && href.includes('url=')) {
-                // Ambil link mentahnya
-                const actualPlayerUrl = href.split('url=')[1];
-                const decodedUrl = decodeURIComponent(actualPlayerUrl);
-                
-                // Bungkus pakai proxy playeriframe.lol
-                const proxyUrl = `https://playeriframe.lol/iframe.php?url=${encodeURIComponent(decodedUrl)}`;
-                
+        // 1. Ekstrak dari Iframe Utama LK21 (yang sering jadi andalan)
+        $('#playeriframe, iframe').each((_, el) => {
+            let src = $(el).attr('src') || $(el).attr('data-src');
+            // Abaikan trailer youtube
+            if (src && !src.includes('youtube.com')) {
+                if (src.startsWith('//')) src = `https:${src}`;
+                const proxyUrl = `https://playeriframe.lol/iframe.php?url=${encodeURIComponent(src)}`;
                 if (!extractedServers.some(s => s.url === proxyUrl)) {
-                    extractedServers.push({ name: serverName, url: proxyUrl });
+                    extractedServers.push({ name: "Server Utama (Bypass)", url: proxyUrl });
                 }
             }
         });
 
+        // 2. Ekstrak dari Tombol Provider Alternatif LK21 (Script temuanmu)
+        $("#loadProviders > li > a, ul.providers li a, .server-option").each((i, el) => {
+            const serverName = $(el).text().trim() || `Server ${i + 1}`;
+            const href = $(el).attr("href") || $(el).attr("data-url");
+
+            if (href) {
+                let actualPlayerUrl = href;
+                if (href.includes('url=')) {
+                    actualPlayerUrl = decodeURIComponent(href.split('url=')[1]);
+                } else if (href.startsWith('//')) {
+                    actualPlayerUrl = `https:${href}`;
+                }
+
+                if (actualPlayerUrl.startsWith('http')) {
+                    const proxyUrl = `https://playeriframe.lol/iframe.php?url=${encodeURIComponent(actualPlayerUrl)}`;
+                    if (!extractedServers.some(s => s.url === proxyUrl)) {
+                        extractedServers.push({ name: serverName, url: proxyUrl });
+                    }
+                }
+            }
+        });
+
+        // 3. Fallback Ekstra (API Vidsrc/2Embed) Jika LK21 Sedang Error
+        const imdbId = $('a[href*="imdb.com/title"]').attr('href')?.match(/tt\d+/)?.[0] || null;
+        if (imdbId) {
+            extractedServers.push(
+                { name: "Server VIP (Vidsrc)", url: `https://vidsrc.to/embed/movie/${imdbId}` },
+                { name: "Server Fast (2Embed)", url: `https://www.2embed.cc/embed/${imdbId}` }
+            );
+        }
+
         const responseData = {
             slug,
             title,
-            image,
             status,
             quality,
             diterbitkan,
