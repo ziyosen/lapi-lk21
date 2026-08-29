@@ -5,7 +5,7 @@ import * as cheerio from 'cheerio';
 const app = new Hono();
 app.use('*', cors());
 
-const BASE_URL = 'https://tv12.lk21official.cc';
+const BASE_URL = 'https://www.striker-yacht.com';
 const CACHE_TTL = 3600; 
 const MAX_PAGE = 15;    
 
